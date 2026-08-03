@@ -1,0 +1,31 @@
+#This script takes a source user and copies their groups to a target user
+#I am taking the AD groups from jrandom and applying them to asmith
+
+# Import AD module (if not already loaded)
+Import-Module ActiveDirectory
+
+# Set the source user
+$sourceUser = "jrandom" 
+
+# Set the target users (use sAMAccountName or UPN)
+$targetUsers = @(
+    "asmith"
+)
+
+# Get the list of groups the source user is a member of
+$sourceGroups = Get-ADUser -Identity $sourceUser -Properties MemberOf | Select-Object -ExpandProperty MemberOf
+
+# Loop through each target user
+foreach ($targetUser in $targetUsers) {
+    Write-Host "`nProcessing $targetUser..." -ForegroundColor Cyan
+
+    foreach ($groupDN in $sourceGroups) {
+        try {
+            $group = Get-ADGroup -Identity $groupDN
+            Add-ADGroupMember -Identity $group -Members $targetUser -ErrorAction Stop
+            Write-Host "✔ Added $targetUser to $($group.Name)" -ForegroundColor Green
+        } catch {
+            Write-Host "❌ Failed to add $targetUser to group $groupDN. Error: $_" -ForegroundColor Red
+        }
+    }
+}
