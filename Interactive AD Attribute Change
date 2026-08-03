@@ -1,0 +1,166 @@
+#This is a script that serves as an interactive AD attribute modifier.
+
+Import-Module ActiveDirectory -ErrorAction Stop
+
+# -------- SETTINGS --------
+$LogPath = "\\network\folder\path.csv"
+$Tech = $env:USERNAME
+
+if (!(Test-Path (Split-Path $LogPath))) {
+    New-Item -ItemType Directory -Path (Split-Path $LogPath) -Force | Out-Null
+}
+
+if (!(Test-Path $LogPath)) {
+    "Date,Tech,User,Attribute,OldValue,NewValue" | Out-File $LogPath
+}
+
+# -------- FUNCTIONS --------
+
+function Show-UserInfo {
+    param ($User)
+
+    Write-Host ""
+    Write-Host "User Information"
+    Write-Host "--------------------------------"
+    Write-Host "Name       : $($User.Name)"
+    Write-Host "Username   : $($User.SamAccountName)"
+    Write-Host "Email      : $($User.Mail)"
+    Write-Host "Title      : $($User.Title)"
+    Write-Host "Department : $($User.Department)"
+
+    if ($User.Manager) {
+        try {
+            $mgr = Get-ADUser $User.Manager -Properties Name
+            Write-Host "Manager    : $($mgr.Name)"
+        }
+        catch {
+            Write-Host "Manager    : "
+        }
+    }
+    else {
+        Write-Host "Manager    : "
+    }
+
+    Write-Host "Mobile     : $($User.Mobile)"
+    Write-Host "--------------------------------"
+    Write-Host ""
+}
+
+function Confirm-Action {
+    param ($Message)
+
+    do {
+        $confirm = Read-Host "$Message (Y/N)"
+    } while ($confirm -notmatch '^[YyNn]$')
+
+    return $confirm -match '^[Yy]$'
+}
+
+function Write-Log {
+    param ($User,$Attribute,$Old,$New)
+
+    $line = """$(Get-Date)"",""$Tech"",""$($User.SamAccountName)"",""$Attribute"",""$Old"",""$New"""
+    Add-Content -Path $LogPath -Value $line
+}
+
+# -------- MAIN --------
+
+Write-Host "`n=== Change AD Attributes Tool ===`n"
+
+while ($true) {
+
+    $username = Read-Host "Enter username (or type EXIT)"
+    if ($username -match '^exit$') { break }
+
+    try {
+        $user = Get-ADUser $username -Properties Title,Department,Manager,Mail,Mobile -ErrorAction Stop
+    }
+    catch {
+        Write-Host "User not found." -ForegroundColor Red
+        continue
+    }
+
+    $changeUser = $false
+
+    while (-not $changeUser) {
+
+        $user = Get-ADUser $username -Properties Title,Department,Manager,Mail,Mobile
+        Show-UserInfo $user
+
+        Write-Host "What would you like to change?"
+        Write-Host "1 - Title"
+        Write-Host "2 - Department"
+        Write-Host "3 - Manager"
+        Write-Host "4 - Mobile"
+        Write-Host "5 - New User"
+        Write-Host "6 - Exit"
+
+        $choice = Read-Host "Select option"
+
+        switch ($choice) {
+
+            '1' {
+                $old = $user.Title
+                $new = Read-Host "Enter new Title"
+                if (Confirm-Action "Change Title to '$new'?") {
+                    Set-ADUser $user -Title $new
+                    Write-Log $user "Title" $old $new
+                    Write-Host "Title updated." -ForegroundColor Green
+                }
+            }
+
+            '2' {
+                $old = $user.Department
+                $new = Read-Host "Enter new Department"
+                if (Confirm-Action "Change Department to '$new'?") {
+                    Set-ADUser $user -Department $new
+                    Write-Log $user "Department" $old $new
+                    Write-Host "Department updated." -ForegroundColor Green
+                }
+            }
+
+            '3' {
+                $old = if ($user.Manager) { (Get-ADUser $user.Manager).Name } else { "" }
+                $mgr = Read-Host "Enter manager username"
+
+                try {
+                    $mgrUser = Get-ADUser $mgr -ErrorAction Stop
+                    if (Confirm-Action "Change Manager to '$($mgrUser.Name)'?") {
+                        Set-ADUser $user -Manager $mgrUser.DistinguishedName
+                        Write-Log $user "Manager" $old $mgrUser.Name
+                        Write-Host "Manager updated." -ForegroundColor Green
+                    }
+                }
+                catch {
+                    Write-Host "Manager not found." -ForegroundColor Red
+                }
+            }
+
+            '4' {
+                $old = $user.Mobile
+                $new = Read-Host "Enter new Mobile Number"
+                if (Confirm-Action "Change Mobile to '$new'?") {
+                    Set-ADUser $user -Mobile $new
+                    Write-Log $user "Mobile" $old $new
+                    Write-Host "Mobile updated." -ForegroundColor Green
+                }
+            }
+
+            '5' {
+                Write-Host "Switching user..." -ForegroundColor Cyan
+                $changeUser = $true
+            }
+
+            '6' {
+                Write-Host "Exiting tool..." -ForegroundColor Cyan
+                return
+            }
+
+            default {
+                Write-Host "Invalid selection." -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
+Write-Host "`nDone.`n"
