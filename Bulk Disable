@@ -1,0 +1,11 @@
+#This script takes a CSV, loops through, and disables accounts in bulk. CSV has to have SamAccountName.
+Import-Module ActiveDirectory
+
+$csvPath = "\\network\folder\Andre S\Accounts to disable.csv"
+
+$users = Import-Csv $csvPath
+
+foreach ($user in $users) {
+    Disable-ADAccount -Identity $user.SamAccountName
+}
+
