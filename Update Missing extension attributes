@@ -1,0 +1,90 @@
+#This script searches for enabled AD accounts with missing extension attribute 1,2, and 3, and allows you to edit
+
+Import-Module ActiveDirectory
+
+Write-Host "`nScanning Active Directory for enabled users with missing extension attributes..." -ForegroundColor Cyan
+
+$Users = Get-ADUser -Filter 'Enabled -eq $true' -Properties extensionAttribute1, extensionAttribute2, extensionAttribute3, SamAccountName, Title, Department
+
+$MissingUsers = $Users | Where-Object {
+
+    # Skip admin / service style accounts by name
+    $_.SamAccountName -notmatch '^adm|_adm|adm$|^svc|_svc|svc$|service|sql|app' -and
+
+    # Skip accounts explicitly tagged as service accounts
+    $_.extensionAttribute1 -notmatch '^service account$' -and (
+
+        [string]::IsNullOrWhiteSpace($_.extensionAttribute1) -or
+        [string]::IsNullOrWhiteSpace($_.extensionAttribute2) -or
+        [string]::IsNullOrWhiteSpace($_.extensionAttribute3)
+
+    )
+}
+
+if (-not $MissingUsers) {
+    Write-Host "`nNo users found with missing Extension Attributes." -ForegroundColor Green
+    return
+}
+
+foreach ($User in $MissingUsers) {
+
+    Write-Host "`n----------------------------------------"
+    Write-Host "User: $($User.SamAccountName)"
+    Write-Host "Name: $($User.Name)"
+    Write-Host "Title: $($User.Title)"
+    Write-Host "Department: $($User.Department)"
+    Write-Host "Ext1: $($User.extensionAttribute1)"
+    Write-Host "Ext2: $($User.extensionAttribute2)"
+    Write-Host "Ext3: $($User.extensionAttribute3)"
+
+    # ---- ExtensionAttribute1 ----
+    if ([string]::IsNullOrWhiteSpace($User.extensionAttribute1)) {
+
+        $Confirm = Read-Host "extensionAttribute1 is missing. Edit? (Y/N)"
+
+        if ($Confirm -match '^[Yy]$') {
+            $Value = Read-Host "Enter value for extensionAttribute1"
+
+            if ($Value) {
+                Set-ADUser $User -Replace @{extensionAttribute1 = $Value}
+                Write-Host "extensionAttribute1 updated." -ForegroundColor Green
+            }
+        }
+    }
+
+    # ---- ExtensionAttribute2 ----
+    if ([string]::IsNullOrWhiteSpace($User.extensionAttribute2)) {
+
+        $Confirm = Read-Host "extensionAttribute2 is missing. Edit? (Y/N)"
+
+        if ($Confirm -match '^[Yy]$') {
+            $Value = Read-Host "Enter value for extensionAttribute2"
+
+            if ($Value) {
+                Set-ADUser $User -Replace @{extensionAttribute2 = $Value}
+                Write-Host "extensionAttribute2 updated." -ForegroundColor Green
+            }
+        }
+    }
+    # ---- ExtensionAttribute3 ----
+    if ([string]::IsNullOrWhiteSpace($User.extensionAttribute3)) {
+
+        $Confirm = Read-Host "extensionAttribute3 is missing. Edit? (Y/N)"
+
+        if ($Confirm -match '^[Yy]$') {
+            $Value = Read-Host "Enter value for extensionAttribute3"
+
+            if ($Value) {
+                Set-ADUser $User -Replace @{extensionAttribute3 = $Value}
+                Write-Host "extensionAttribute3 updated." -ForegroundColor Green
+            }
+        }
+    }
+}
+
+Write-Host "`nProcessing complete." -ForegroundColor Cyan
+
+
+
+
+#Andre S
