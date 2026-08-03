@@ -1,0 +1,2 @@
+#Takes an AD object and changes its CN. Here, I want to add a space for an AD object in the Distribution Groups OU. 
+Rename-ADObject -Identity "CN=OldName,OU=Distribution Groups,OU=Groups,DC=XX,DC=XX" -NewName "New Name"
