@@ -7,7 +7,7 @@ Import-Module ActiveDirectory
 # Set the source user
 $sourceUser = "jrandom" 
 
-# Set the target users (use sAMAccountName or UPN)
+# Set the target users (use SamAccountName or UPN)
 $targetUsers = @(
     "asmith"
 )
