@@ -1,0 +1,86 @@
+#This fixes white space in AD accounts.
+
+Import-Module ActiveDirectory
+
+# Get all enabled users
+$Users = Get-ADUser -Filter "Enabled -eq 'True'" -Properties GivenName,Surname,DisplayName
+
+foreach ($User in $Users) {
+
+    $Changes = @{}
+
+    # Original values
+    $OldGivenName   = $User.GivenName
+    $OldSurname     = $User.Surname
+    $OldDisplayName = $User.DisplayName
+
+    # Cleaned values
+    $NewGivenName = if ($OldGivenName) {
+        (($OldGivenName -replace '\s{2,}',' ').Trim())
+    }
+
+    $NewSurname = if ($OldSurname) {
+        (($OldSurname -replace '\s{2,}',' ').Trim())
+    }
+
+    $NewDisplayName = if ($OldDisplayName) {
+        (($OldDisplayName -replace '\s{2,}',' ').Trim())
+    }
+
+    # Compare
+    if ($OldGivenName -ne $NewGivenName) {
+        $Changes["GivenName"] = $NewGivenName
+    }
+
+    if ($OldSurname -ne $NewSurname) {
+        $Changes["Surname"] = $NewSurname
+    }
+
+    if ($OldDisplayName -ne $NewDisplayName) {
+        $Changes["DisplayName"] = $NewDisplayName
+    }
+
+    # Skip if nothing to change
+    if ($Changes.Count -eq 0) {
+        continue
+    }
+
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "User: $($User.SamAccountName)"
+    Write-Host "Name: $($User.Name)"
+    Write-Host ""
+
+    if ($Changes.ContainsKey("GivenName")) {
+        Write-Host "First Name:"
+        Write-Host "   Old: '$OldGivenName'"
+        Write-Host "   New: '$NewGivenName'"
+    }
+
+    if ($Changes.ContainsKey("Surname")) {
+        Write-Host "Last Name:"
+        Write-Host "   Old: '$OldSurname'"
+        Write-Host "   New: '$NewSurname'"
+    }
+
+    if ($Changes.ContainsKey("DisplayName")) {
+        Write-Host "Display Name:"
+        Write-Host "   Old: '$OldDisplayName'"
+        Write-Host "   New: '$NewDisplayName'"
+    }
+
+    Write-Host ""
+
+    $Answer = Read-Host "Apply these changes? (Y/N)"
+
+    if ($Answer -match '^(Y|YES)$') {
+        Set-ADUser -Identity $User @Changes
+        Write-Host "Changes applied." -ForegroundColor Green
+    }
+    else {
+        Write-Host "Skipped." -ForegroundColor Yellow
+    }
+}
+
+Write-Host ""
+Write-Host "Finished processing all enabled users." -ForegroundColor Cyan
