@@ -1,0 +1,62 @@
+# =========================================
+# INTERACTIVE ACCOUNT DISABLE SCRIPT
+# =========================================
+
+Import-Module ActiveDirectory
+
+# Connect to Microsoft Graph
+Connect-MgGraph -Scopes `
+"User.ReadWrite.All",
+"UserAuthenticationMethod.ReadWrite.All"
+
+# Prompt for username/UPN
+$UserUPN = Read-Host "Enter the user's UPN (example: user@company.com)"
+
+# =========================================
+# GET USER
+# =========================================
+
+$ADUser = Get-ADUser -Filter "UserPrincipalName -eq '$UserUPN'"
+
+if (-not $ADUser) {
+    Write-Host "AD user not found." -ForegroundColor Red
+    return
+}
+
+# =========================================
+# DISABLE AD ACCOUNT
+# =========================================
+
+Disable-ADAccount -Identity $ADUser.SamAccountName
+
+Write-Host "AD account disabled." -ForegroundColor Green
+
+# =========================================
+# BLOCK CLOUD SIGN-IN
+# =========================================
+
+Update-MgUser `
+    -UserId $UserUPN `
+    -AccountEnabled:$false
+
+Write-Host "Cloud sign-in blocked." -ForegroundColor Green
+
+# =========================================
+# REVOKE ACTIVE SESSIONS
+# =========================================
+
+Revoke-MgUserSignInSession -UserId $UserUPN
+
+Write-Host "Active sessions revoked." -ForegroundColor Green
+
+# =========================================
+# REQUIRE MFA RE-REGISTRATION
+# =========================================
+
+Reset-MgUserAuthenticationMethod `
+    -UserId $UserUPN
+
+Write-Host "User forced to re-register MFA." -ForegroundColor Green
+
+Write-Host ""
+Write-Host "Completed successfully for $UserUPN" -ForegroundColor Cyan
