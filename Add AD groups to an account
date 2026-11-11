@@ -1,0 +1,202 @@
+
+# ============================================================
+# Add User to On-Premises Active Directory Group
+# ============================================================
+
+# Import Active Directory module
+Import-Module ActiveDirectory -ErrorAction Stop
+
+# Generate unique transcript filename
+$logFolder = "\\server\folder"
+$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+$logFile = Join-Path $logFolder "GroupMemberAdd_$timestamp.log"
+
+# Create log folder if it doesn't exist
+if (!(Test-Path $LogFolder)) {
+    New-Item -Path $LogFolder -ItemType Directory -Force | Out-Null
+}
+
+# Start transcript
+Start-Transcript -Path $LogFile -Append
+
+try {
+
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "   ADD USER TO ON-PREM AD GROUP" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    # STEP 1 - Request username
+    $Username = Read-Host "`nEnter the user's username (SamAccountName)"
+
+    if ([string]::IsNullOrWhiteSpace($Username)) {
+        throw "Username cannot be blank."
+    }
+
+    # STEP 2 - Find user in AD
+    Write-Host "`nChecking user in Active Directory..." -ForegroundColor Yellow
+
+    $User = Get-ADUser -Identity $Username `
+        -Properties UserPrincipalName, DisplayName `
+        -ErrorAction Stop
+
+    if (!$User) {
+        throw "No AD user found with username: $Username"
+    }
+
+    Write-Host "`nUser found:" -ForegroundColor Green
+    Write-Host "Name:     $($User.DisplayName)"
+    Write-Host "Username: $($User.SamAccountName)"
+    Write-Host "UPN:      $($User.UserPrincipalName)"
+
+    # STEP 3 - Request AD group name
+    $GroupSearch = Read-Host "`nEnter the AD group name (or part of the name)"
+
+    if ([string]::IsNullOrWhiteSpace($GroupSearch)) {
+        throw "Group search cannot be blank."
+    }
+
+    # Escape special characters for the AD filter
+    $EscapedSearch = $GroupSearch.Replace("'", "''")
+
+    # STEP 4 - Search for matching AD groups
+    Write-Host "`nSearching Active Directory groups..." -ForegroundColor Yellow
+
+    $Groups = @(
+        Get-ADGroup -Filter "Name -like '*$EscapedSearch*'" `
+            -Properties Description `
+            -ErrorAction Stop |
+        Sort-Object Name
+    )
+
+    if ($Groups.Count -eq 0) {
+        throw "No AD groups found matching: $GroupSearch"
+    }
+
+    # STEP 5 - Display matching groups
+    Write-Host "`nMatching AD groups:" -ForegroundColor Cyan
+
+    for ($i = 0; $i -lt $Groups.Count; $i++) {
+
+        Write-Host "`n[$($i + 1)] $($Groups[$i].Name)" -ForegroundColor Green
+        Write-Host "    Description: $($Groups[$i].Description)"
+        Write-Host "    DN: $($Groups[$i].DistinguishedName)"
+    }
+
+    # STEP 6 - Select group by number
+    do {
+
+        $Selection = Read-Host "`nEnter the number of the correct AD group"
+
+        $SelectedNumber = 0
+
+        $ValidNumber = [int]::TryParse(
+            $Selection,
+            [ref]$SelectedNumber
+        )
+
+        if (
+            !$ValidNumber -or
+            $SelectedNumber -lt 1 -or
+            $SelectedNumber -gt $Groups.Count
+        ) {
+            Write-Host "Invalid selection. Please enter a valid number from the list." -ForegroundColor Red
+        }
+
+    } until (
+        $ValidNumber -and
+        $SelectedNumber -ge 1 -and
+        $SelectedNumber -le $Groups.Count
+    )
+
+    $SelectedGroup = $Groups[$SelectedNumber - 1]
+
+    # STEP 7 - Confirm selected group
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "SELECTED AD GROUP" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    Write-Host "Group: $($SelectedGroup.Name)"
+    Write-Host "DN:    $($SelectedGroup.DistinguishedName)"
+
+    $GroupConfirm = Read-Host "`nIs this the correct AD group? (Y/N)"
+
+    if ($GroupConfirm -notmatch '^(Y|YES)$') {
+        throw "Group selection cancelled."
+    }
+
+    # STEP 8 - Check existing membership
+    Write-Host "`nChecking existing group membership..." -ForegroundColor Yellow
+
+    $ExistingMembership = Get-ADGroupMember `
+        -Identity $SelectedGroup.DistinguishedName `
+        -Recursive:$false `
+        -ErrorAction Stop |
+        Where-Object {
+            $_.DistinguishedName -eq $User.DistinguishedName
+        }
+
+    if ($ExistingMembership) {
+        throw "User is already a direct member of this AD group."
+    }
+
+    # STEP 9 - Final review and confirmation
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "FINAL REVIEW" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    Write-Host "User:     $($User.DisplayName)"
+    Write-Host "Username: $($User.SamAccountName)"
+    Write-Host "Group:    $($SelectedGroup.Name)"
+
+    $FinalConfirm = Read-Host "`nAdd this user to this AD group? (Y/N)"
+
+    if ($FinalConfirm -notmatch '^(Y|YES)$') {
+        throw "Operation cancelled by user."
+    }
+
+    # STEP 10 - Add user to AD group
+    Write-Host "`nAdding user to AD group..." -ForegroundColor Yellow
+
+    Add-ADGroupMember `
+        -Identity $SelectedGroup.DistinguishedName `
+        -Members $User `
+        -ErrorAction Stop
+
+    # STEP 11 - Verify membership
+    Write-Host "`nVerifying group membership..." -ForegroundColor Yellow
+
+    $Verification = Get-ADGroupMember `
+        -Identity $SelectedGroup.DistinguishedName `
+        -ErrorAction Stop |
+        Where-Object {
+            $_.DistinguishedName -eq $User.DistinguishedName
+        }
+
+    if ($Verification) {
+
+        Write-Host "`nSUCCESS! User was added to the AD group." -ForegroundColor Green
+
+        Write-Host "`nUser:  $($User.SamAccountName)"
+        Write-Host "Group: $($SelectedGroup.Name)"
+
+    }
+    else {
+        throw "The add command completed, but membership verification failed."
+    }
+
+}
+catch {
+
+    Write-Host "`nERROR: $($_.Exception.Message)" -ForegroundColor Red
+
+}
+finally {
+
+    Stop-Transcript
+
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "Transcript saved to:" -ForegroundColor Cyan
+    Write-Host $LogFile -ForegroundColor Yellow
+    Write-Host "========================================" -ForegroundColor Cyan
+
+}
