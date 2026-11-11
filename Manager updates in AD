@@ -1,0 +1,282 @@
+
+# ============================================================
+# Bulk Update Active Directory User Managers
+# ============================================================
+
+Import-Module ActiveDirectory -ErrorAction Stop
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+# Transcript log folder
+$logFolder = "C:\Scripts\Logs"
+
+# Generate unique transcript filename
+$logFolder = "\\server\folder"
+$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+$logFile = Join-Path $logFolder "AD_Manager_Update_$timestamp.log"
+
+# Create log folder if it does not exist
+if (!(Test-Path -Path $logFolder)) {
+    New-Item -Path $logFolder -ItemType Directory -Force | Out-Null
+}
+
+# Start transcript
+Start-Transcript -Path $logFile -Force
+
+try {
+
+    Write-Host "`n============================================" -ForegroundColor Cyan
+    Write-Host "   BULK ACTIVE DIRECTORY MANAGER UPDATE" -ForegroundColor Cyan
+    Write-Host "============================================`n" -ForegroundColor Cyan
+
+    # ========================================================
+    # STEP 1 - SELECT MANAGER
+    # ========================================================
+
+    $manager = $null
+
+    while (!$manager) {
+
+        $managerUsername = Read-Host "Enter the manager's username (SamAccountName)"
+
+        if ([string]::IsNullOrWhiteSpace($managerUsername)) {
+            Write-Host "Manager username cannot be blank." -ForegroundColor Red
+            continue
+        }
+
+        try {
+            $manager = Get-ADUser -Identity $managerUsername `
+                -Properties DisplayName, SamAccountName, DistinguishedName `
+                -ErrorAction Stop
+
+            Write-Host "`nManager selected:" -ForegroundColor Green
+            Write-Host "Name: $($manager.DisplayName)"
+            Write-Host "Username: $($manager.SamAccountName)"
+        }
+        catch {
+            Write-Host "Manager account '$managerUsername' was not found." -ForegroundColor Red
+            $manager = $null
+        }
+    }
+
+    # ========================================================
+    # STEP 2 - ENTER TARGET USERNAMES
+    # ========================================================
+
+    Write-Host "`nEnter the usernames of the accounts you want to update." -ForegroundColor Cyan
+    Write-Host "Separate multiple usernames using commas, semicolons, or spaces."
+    Write-Host "Press ENTER when finished.`n"
+
+    $userInput = Read-Host "Enter username(s)"
+
+    $inputUsernames = @(
+        $userInput -split '[,;\s]+' |
+        Where-Object { ![string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique
+    )
+
+    if ($inputUsernames.Count -eq 0) {
+        Write-Host "`nNo usernames were provided. Exiting without changes." -ForegroundColor Yellow
+        return
+    }
+
+    # ========================================================
+    # STEP 3 - VALIDATE TARGET ACCOUNTS
+    # ========================================================
+
+    $validatedUsers = @()
+    $invalidUsers = @()
+
+    Write-Host "`nValidating user accounts...`n" -ForegroundColor Cyan
+
+    foreach ($username in $inputUsernames) {
+
+        try {
+            $user = Get-ADUser -Identity $username `
+                -Properties DisplayName, SamAccountName, Manager `
+                -ErrorAction Stop
+
+            # Prevent selecting the manager as a target
+            if ($user.DistinguishedName -eq $manager.DistinguishedName) {
+                Write-Host "SKIPPED: $username is the selected manager." -ForegroundColor Yellow
+                continue
+            }
+
+            # Retrieve current manager's display name
+            $currentManagerName = "None Assigned"
+
+            if ($user.Manager) {
+                try {
+                    $currentManager = Get-ADUser -Identity $user.Manager `
+                        -Properties DisplayName -ErrorAction Stop
+
+                    $currentManagerName = $currentManager.DisplayName
+                }
+                catch {
+                    $currentManagerName = "Unable to resolve current manager"
+                }
+            }
+
+            $validatedUsers += [PSCustomObject]@{
+                Name               = $user.DisplayName
+                Username           = $user.SamAccountName
+                DistinguishedName  = $user.DistinguishedName
+                CurrentManager     = $currentManagerName
+                CurrentManagerDN   = $user.Manager
+                NewManager         = $manager.DisplayName
+                NewManagerDN       = $manager.DistinguishedName
+            }
+
+            Write-Host "VALID: $username - $($user.DisplayName)" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "INVALID: $username - Account not found." -ForegroundColor Red
+
+            $invalidUsers += $username
+        }
+    }
+
+    if ($validatedUsers.Count -eq 0) {
+        Write-Host "`nNo valid target accounts were found. Exiting without changes." -ForegroundColor Yellow
+        return
+    }
+
+    # ========================================================
+    # STEP 4 - REVIEW PROPOSED CHANGES
+    # ========================================================
+
+    Write-Host "`n============================================" -ForegroundColor Cyan
+    Write-Host "          REVIEW PROPOSED CHANGES" -ForegroundColor Cyan
+    Write-Host "============================================" -ForegroundColor Cyan
+
+    Write-Host "`nSelected Manager:" -ForegroundColor Yellow
+    Write-Host "$($manager.DisplayName) ($($manager.SamAccountName))"
+
+    Write-Host "`nAccounts to be updated:`n" -ForegroundColor Yellow
+
+    $validatedUsers |
+        Select-Object Name, Username, CurrentManager, NewManager |
+        Format-Table -AutoSize
+
+    Write-Host "Valid accounts: $($validatedUsers.Count)" -ForegroundColor Green
+    Write-Host "Invalid accounts: $($invalidUsers.Count)" -ForegroundColor Yellow
+
+    Write-Host "`nIMPORTANT: No changes have been made yet." -ForegroundColor Yellow
+
+    $confirmation = Read-Host "`nDo you want to proceed with these manager updates? (Y/N)"
+
+    if ($confirmation -notmatch '^(Y|YES)$') {
+        Write-Host "`nOperation cancelled. No changes were made." -ForegroundColor Yellow
+        return
+    }
+
+    # ========================================================
+    # STEP 5 - APPLY MANAGER CHANGES
+    # ========================================================
+
+    Write-Host "`n============================================" -ForegroundColor Cyan
+    Write-Host "          APPLYING MANAGER UPDATES" -ForegroundColor Cyan
+    Write-Host "============================================`n" -ForegroundColor Cyan
+
+    $results = @()
+
+    foreach ($user in $validatedUsers) {
+
+        # Skip users already assigned to this manager
+        if ($user.CurrentManagerDN -eq $user.NewManagerDN) {
+
+            Write-Host "SKIPPED: $($user.Username) already has this manager." -ForegroundColor Yellow
+
+            $results += [PSCustomObject]@{
+                Name       = $user.Name
+                Username   = $user.Username
+                OldManager = $user.CurrentManager
+                NewManager = $user.NewManager
+                Status     = "Already Assigned"
+                Details    = "No change required"
+            }
+
+            continue
+        }
+
+        try {
+
+            # Update manager attribute
+            Set-ADUser -Identity $user.DistinguishedName `
+                -Manager $user.NewManagerDN `
+                -ErrorAction Stop
+
+            # Verify the change
+            $updatedUser = Get-ADUser -Identity $user.DistinguishedName `
+                -Properties Manager -ErrorAction Stop
+
+            if ($updatedUser.Manager -eq $user.NewManagerDN) {
+
+                Write-Host "SUCCESS: $($user.Username) -> $($user.NewManager)" -ForegroundColor Green
+
+                $results += [PSCustomObject]@{
+                    Name       = $user.Name
+                    Username   = $user.Username
+                    OldManager = $user.CurrentManager
+                    NewManager = $user.NewManager
+                    Status     = "Success"
+                    Details    = "Manager updated and verified"
+                }
+            }
+            else {
+                throw "Manager update could not be verified."
+            }
+        }
+        catch {
+
+            Write-Host "FAILED: $($user.Username) - $($_.Exception.Message)" -ForegroundColor Red
+
+            $results += [PSCustomObject]@{
+                Name       = $user.Name
+                Username   = $user.Username
+                OldManager = $user.CurrentManager
+                NewManager = $user.NewManager
+                Status     = "Failed"
+                Details    = $_.Exception.Message
+            }
+        }
+    }
+
+    # ========================================================
+    # STEP 6 - FINAL RESULTS
+    # ========================================================
+
+    Write-Host "`n============================================" -ForegroundColor Cyan
+    Write-Host "             UPDATE RESULTS" -ForegroundColor Cyan
+    Write-Host "============================================`n" -ForegroundColor Cyan
+
+    $results | Format-Table Name, Username, OldManager, NewManager, Status -AutoSize
+
+    $successCount = @($results | Where-Object { $_.Status -eq "Success" }).Count
+    $alreadyAssignedCount = @($results | Where-Object { $_.Status -eq "Already Assigned" }).Count
+    $failedCount = @($results | Where-Object { $_.Status -eq "Failed" }).Count
+
+    Write-Host "`nSUMMARY" -ForegroundColor Cyan
+    Write-Host "------------------------------"
+    Write-Host "Successfully updated: $successCount" -ForegroundColor Green
+    Write-Host "Already assigned:     $alreadyAssignedCount" -ForegroundColor Yellow
+    Write-Host "Failed updates:       $failedCount" -ForegroundColor Red
+    Write-Host "Invalid usernames:    $($invalidUsers.Count)" -ForegroundColor Yellow
+
+    if ($invalidUsers.Count -gt 0) {
+        Write-Host "`nInvalid usernames:" -ForegroundColor Red
+        $invalidUsers | ForEach-Object { Write-Host " - $_" }
+    }
+
+    Write-Host "`nTranscript saved to: $logFile" -ForegroundColor Cyan
+
+}
+catch {
+    Write-Host "`nAn unexpected error occurred: $($_.Exception.Message)" -ForegroundColor Red
+}
+finally {
+    Stop-Transcript
+    Write-Host "`nScript execution completed." -ForegroundColor Cyan
+}
