@@ -1,0 +1,387 @@
+# ============================================================
+# Add User to Multiple On-Premises Active Directory Groups
+# ============================================================
+
+# Import Active Directory module
+Import-Module ActiveDirectory -ErrorAction Stop
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+# Generate unique transcript filename
+$logFolder = "\\server\share"
+$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+$logFile = Join-Path $logFolder "GroupMemberAdd_$timestamp.log"
+
+# Create log folder if it doesn't exist
+if (!(Test-Path $logFolder)) {
+    New-Item -Path $logFolder -ItemType Directory -Force | Out-Null
+}
+
+# Start transcript
+Start-Transcript -Path $logFile -Append
+
+$TranscriptStarted = $true
+
+try {
+
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "   ADD USER TO ON-PREM AD GROUP" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    # ========================================================
+    # STEP 1 - Request username
+    # ========================================================
+
+    $Username = Read-Host "`nEnter the user's username (SamAccountName)"
+
+    if ([string]::IsNullOrWhiteSpace($Username)) {
+        throw "Username cannot be blank."
+    }
+
+    # ========================================================
+    # STEP 2 - Find user in AD
+    # ========================================================
+
+    Write-Host "`nChecking user in Active Directory..." -ForegroundColor Yellow
+
+    $User = Get-ADUser -Identity $Username `
+        -Properties UserPrincipalName, DisplayName `
+        -ErrorAction Stop
+
+    if (!$User) {
+        throw "No AD user found with username: $Username"
+    }
+
+    Write-Host "`nUser found:" -ForegroundColor Green
+    Write-Host "Name:     $($User.DisplayName)"
+    Write-Host "Username: $($User.SamAccountName)"
+    Write-Host "UPN:      $($User.UserPrincipalName)"
+
+    # ========================================================
+    # STEP 3 - Group selection and addition loop
+    # ========================================================
+
+    $Continue = $true
+
+    $SuccessCount = 0
+    $AlreadyMemberCount = 0
+    $FailedCount = 0
+
+    $Results = @()
+
+    while ($Continue) {
+
+        # ----------------------------------------------------
+        # STEP 3A - Request AD group name
+        # ----------------------------------------------------
+
+        Write-Host "`n========================================" -ForegroundColor Cyan
+        Write-Host "AD GROUP SELECTION" -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+
+        $GroupSearch = Read-Host "`nEnter the AD group name (or part of the name)"
+
+        if ([string]::IsNullOrWhiteSpace($GroupSearch)) {
+            Write-Host "Group search cannot be blank." -ForegroundColor Red
+            continue
+        }
+
+        # Escape special characters for the AD filter
+        $EscapedSearch = $GroupSearch.Replace("'", "''")
+
+        # ----------------------------------------------------
+        # STEP 3B - Search for matching AD groups
+        # ----------------------------------------------------
+
+        Write-Host "`nSearching Active Directory groups..." -ForegroundColor Yellow
+
+        $Groups = @(
+            Get-ADGroup -Filter "Name -like '*$EscapedSearch*'" `
+                -Properties Description `
+                -ErrorAction Stop |
+            Sort-Object Name
+        )
+
+        if ($Groups.Count -eq 0) {
+            Write-Host "No AD groups found matching: $GroupSearch" -ForegroundColor Red
+            continue
+        }
+
+        # ----------------------------------------------------
+        # STEP 3C - Display matching groups
+        # ----------------------------------------------------
+
+        Write-Host "`nMatching AD groups:" -ForegroundColor Cyan
+
+        for ($i = 0; $i -lt $Groups.Count; $i++) {
+
+            Write-Host "`n[$($i + 1)] $($Groups[$i].Name)" -ForegroundColor Green
+            Write-Host "    Description: $($Groups[$i].Description)"
+            Write-Host "    DN: $($Groups[$i].DistinguishedName)"
+
+        }
+
+        # ----------------------------------------------------
+        # STEP 3D - Select group by number
+        # ----------------------------------------------------
+
+        do {
+
+            $Selection = Read-Host "`nEnter the number of the correct AD group (or BACK to search again)"
+
+            if ($Selection -eq "BACK") {
+                break
+            }
+
+            $SelectedNumber = 0
+
+            $ValidNumber = [int]::TryParse(
+                $Selection,
+                [ref]$SelectedNumber
+            )
+
+            if (
+                !$ValidNumber -or
+                $SelectedNumber -lt 1 -or
+                $SelectedNumber -gt $Groups.Count
+            ) {
+                Write-Host "Invalid selection. Please enter a valid number from the list." -ForegroundColor Red
+            }
+
+        } until (
+            $Selection -eq "BACK" -or
+            (
+                $ValidNumber -and
+                $SelectedNumber -ge 1 -and
+                $SelectedNumber -le $Groups.Count
+            )
+        )
+
+        if ($Selection -eq "BACK") {
+            continue
+        }
+
+        $SelectedGroup = $Groups[$SelectedNumber - 1]
+
+        # ----------------------------------------------------
+        # STEP 3E - Confirm selected group
+        # ----------------------------------------------------
+
+        Write-Host "`n========================================" -ForegroundColor Cyan
+        Write-Host "SELECTED AD GROUP" -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+
+        Write-Host "Group: $($SelectedGroup.Name)"
+        Write-Host "DN:    $($SelectedGroup.DistinguishedName)"
+
+        $GroupConfirm = Read-Host "`nIs this the correct AD group? (Y/N)"
+
+        if ($GroupConfirm -notmatch '^(Y|YES)$') {
+            Write-Host "Group selection cancelled. Returning to group search." -ForegroundColor Yellow
+            continue
+        }
+
+        # ----------------------------------------------------
+        # STEP 3F - Check existing membership
+        # ----------------------------------------------------
+
+        Write-Host "`nChecking existing group membership..." -ForegroundColor Yellow
+
+        try {
+
+            $ExistingMembership = @(
+                Get-ADGroupMember `
+                    -Identity $SelectedGroup.DistinguishedName `
+                    -Recursive:$false `
+                    -ErrorAction Stop |
+                Where-Object {
+                    $_.DistinguishedName -eq $User.DistinguishedName
+                }
+            )
+
+            if ($ExistingMembership.Count -gt 0) {
+
+                Write-Host "`nUser is already a direct member of this AD group." -ForegroundColor Yellow
+
+                $AlreadyMemberCount++
+
+                $Results += [PSCustomObject]@{
+                    Username = $User.SamAccountName
+                    Group    = $SelectedGroup.Name
+                    Status   = "Already a direct member"
+                }
+
+            }
+            else {
+
+                # ------------------------------------------------
+                # STEP 3G - Final review and confirmation
+                # ------------------------------------------------
+
+                Write-Host "`n========================================" -ForegroundColor Cyan
+                Write-Host "FINAL REVIEW" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+
+                Write-Host "User:     $($User.DisplayName)"
+                Write-Host "Username: $($User.SamAccountName)"
+                Write-Host "Group:    $($SelectedGroup.Name)"
+
+                $FinalConfirm = Read-Host "`nAdd this user to this AD group? (Y/N)"
+
+                if ($FinalConfirm -match '^(Y|YES)$') {
+
+                    # ------------------------------------------------
+                    # STEP 3H - Add user to AD group
+                    # ------------------------------------------------
+
+                    Write-Host "`nAdding user to AD group..." -ForegroundColor Yellow
+
+                    Add-ADGroupMember `
+                        -Identity $SelectedGroup.DistinguishedName `
+                        -Members $User `
+                        -ErrorAction Stop
+
+                    # ------------------------------------------------
+                    # STEP 3I - Verify membership
+                    # ------------------------------------------------
+
+                    Write-Host "`nVerifying group membership..." -ForegroundColor Yellow
+
+                    $Verification = @(
+                        Get-ADGroupMember `
+                            -Identity $SelectedGroup.DistinguishedName `
+                            -ErrorAction Stop |
+                        Where-Object {
+                            $_.DistinguishedName -eq $User.DistinguishedName
+                        }
+                    )
+
+                    if ($Verification.Count -gt 0) {
+
+                        Write-Host "`nSUCCESS! User was added to the AD group." -ForegroundColor Green
+
+                        Write-Host "`nUser:  $($User.SamAccountName)"
+                        Write-Host "Group: $($SelectedGroup.Name)"
+
+                        $SuccessCount++
+
+                        $Results += [PSCustomObject]@{
+                            Username = $User.SamAccountName
+                            Group    = $SelectedGroup.Name
+                            Status   = "Successfully added"
+                        }
+
+                    }
+                    else {
+
+                        throw "The add command completed, but membership verification failed."
+
+                    }
+
+                }
+                else {
+
+                    Write-Host "`nOperation cancelled. No changes made to this group." -ForegroundColor Yellow
+
+                    $Results += [PSCustomObject]@{
+                        Username = $User.SamAccountName
+                        Group    = $SelectedGroup.Name
+                        Status   = "Cancelled"
+                    }
+
+                }
+
+            }
+
+        }
+        catch {
+
+            Write-Host "`nERROR: $($_.Exception.Message)" -ForegroundColor Red
+
+            $FailedCount++
+
+            $Results += [PSCustomObject]@{
+                Username = $User.SamAccountName
+                Group    = $SelectedGroup.Name
+                Status   = "Failed: $($_.Exception.Message)"
+            }
+
+        }
+
+        # ----------------------------------------------------
+        # STEP 3J - Continue or stop
+        # ----------------------------------------------------
+
+        Write-Host "`n========================================" -ForegroundColor Cyan
+        Write-Host "GROUP OPERATION COMPLETE" -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+
+        Write-Host "User:  $($User.SamAccountName)"
+        Write-Host "Group: $($SelectedGroup.Name)"
+
+        Write-Host "`nWould you like to add this user to another AD group?"
+
+        do {
+
+            $ContinueChoice = Read-Host "Continue? (Y/N)"
+
+            if ($ContinueChoice -notmatch '^(Y|YES|N|NO)$') {
+                Write-Host "Please enter Y or N." -ForegroundColor Red
+            }
+
+        } until ($ContinueChoice -match '^(Y|YES|N|NO)$')
+
+        if ($ContinueChoice -match '^(N|NO)$') {
+
+            $Continue = $false
+
+            Write-Host "`nEnding group assignment session..." -ForegroundColor Yellow
+
+        }
+
+    }
+
+    # ========================================================
+    # STEP 4 - Final session summary
+    # ========================================================
+
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "FINAL SESSION SUMMARY" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    Write-Host "`nUser: $($User.DisplayName) ($($User.SamAccountName))"
+
+    if ($Results.Count -gt 0) {
+
+        $Results | Format-Table Username, Group, Status -AutoSize -Wrap
+
+    }
+
+    Write-Host "`nTotal group operations: $($Results.Count)"
+    Write-Host "Successfully added:    $SuccessCount" -ForegroundColor Green
+    Write-Host "Already members:       $AlreadyMemberCount" -ForegroundColor Yellow
+    Write-Host "Failed operations:     $FailedCount" -ForegroundColor Red
+
+    Write-Host "`nSession completed." -ForegroundColor Green
+
+}
+catch {
+
+    Write-Host "`nERROR: $($_.Exception.Message)" -ForegroundColor Red
+
+}
+finally {
+
+    if ($TranscriptStarted) {
+        Stop-Transcript
+    }
+
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "SESSION CLOSED" -ForegroundColor Cyan
+    Write-Host "Transcript saved to:" -ForegroundColor Cyan
+    Write-Host $LogFile -ForegroundColor Yellow
+    Write-Host "========================================" -ForegroundColor Cyan
+
+}
